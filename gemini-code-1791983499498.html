@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart 3D Warehouse Logistics Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body { overflow: hidden; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b0f19; }
+    #canvas-container { width: 100vw; height: 100vh; }
+    
+    /* Giao diện UI Glassmorphism Sang trọng */
+    .dashboard-panel {
+      position: absolute;
+      top: 24px;
+      left: 24px;
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      color: #f8fafc;
+      padding: 22px;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      width: 340px;
+      z-index: 10;
+    }
+    .dashboard-panel h2 {
+      font-size: 19px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      color: #38bdf8;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      letter-spacing: -0.5px;
+    }
+    .status-card {
+      background: rgba(255, 255, 255, 0.04);
+      padding: 12px 14px;
+      border-radius: 10px;
+      margin-bottom: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .status-badge {
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .badge-loading { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+    .badge-ready { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+
+    /* Floating Labels trên không không gian 3D */
+    .truck-label-3d {
+      position: absolute;
+      top: 0; left: 0;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid #38bdf8;
+      color: #fff;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      pointer-events: none;
+      white-space: nowrap;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      transform: translate(-50%, -100%);
+      transition: opacity 0.3s;
+      z-index: 5;
+    }
+
+    .legend {
+      position: absolute;
+      bottom: 24px;
+      left: 24px;
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(12px);
+      color: #e2e8f0;
+      padding: 14px 20px;
+      border-radius: 12px;
+      font-size: 12px;
+      display: flex;
+      gap: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .legend-item { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot-red { background: #ef4444; box-shadow: 0 0 10px #ef4444; }
+    .dot-green { background: #10b981; box-shadow: 0 0 10px #10b981; }
+  </style>
+</head>
+<body>
+
+  <div id="canvas-container"></div>
+  <div id="labels-container"></div>
+
+  <!-- UI Overlay -->
+  <div class="dashboard-panel">
+    <h2>Warehouse 3D Control</h2>
+    <div id="truck-status-list"></div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><span class="dot dot-red"></span> Đèn Đỏ: Đang bốc hàng</div>
+    <div class="legend-item"><span class="dot dot-green"></span> Đèn Xanh: Hoàn tất & Xuất bến</div>
+  </div>
+
+  <!-- Import Three.js & Libraries -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+        "@tweenjs/tween.js": "https://unpkg.com/@tweenjs/tween.js@23.1.1/dist/tween.esm.js"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import TWEEN from '@tweenjs/tween.js';
+
+    // 1. SCENE & CAMERA ISOMETRIC SETUP
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x090d16);
+    scene.fog = new THREE.FogExp2(0x090d16, 0.008);
+
+    const aspect = window.innerWidth / window.innerHeight;
+    const d = 36;
+    const camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 1000);
+    camera.position.set(45, 45, 45);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.maxPolarAngle = Math.PI / 2 - 0.05;
+
+    // 2. LIGHTING SYSTEM (ÁNH SÁNG NGHỆ THUẬT)
+    const ambientLight = new THREE.AmbientLight(0x38bdf8, 0.4); // Light blue ambient
+    scene.add(ambientLight);
+
+    const mainLight = new THREE.DirectionalLight(0xfff7ed, 1.5); // Warm sun light
+    mainLight.position.set(50, 70, 30);
+    mainLight.castShadow = true;
+    mainLight.shadow.mapSize.width = 2048;
+    mainLight.shadow.mapSize.height = 2048;
+    mainLight.shadow.camera.near = 10;
+    mainLight.shadow.camera.far = 200;
+    const shadowDist = 55;
+    mainLight.shadow.camera.left = -shadowDist;
+    mainLight.shadow.camera.right = shadowDist;
+    mainLight.shadow.camera.top = shadowDist;
+    mainLight.shadow.camera.bottom = -shadowDist;
+    mainLight.shadow.bias = -0.0005;
+    scene.add(mainLight);
+
+    const fillLight = new THREE.DirectionalLight(0x1e1b4b, 0.8); // Deep indigo shadow fill
+    fillLight.position.set(-40, 20, -30);
+    scene.add(fillLight);
+
+    // 3. CANVAS TEXTURE GENERATORS (TẠO TEXTURE TỰ ĐỘNG)
+    
+    // Vân gân thùng Container
+    function createCorrugatedTexture() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 512; canvas.height = 512;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, 512, 512);
+      ctx.fillStyle = '#cbd5e1';
+      for (let x = 0; x < 512; x += 32) {
+        ctx.fillRect(x, 0, 12, 512);
+      }
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      return texture;
+    }
+
+    // Biển số xe
+    function createPlateTexture(text) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 512; canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 14;
+      ctx.strokeStyle = '#000000';
+      ctx.strokeRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000000';
+      ctx.font = '900 68px "Segoe UI", Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+      return new THREE.CanvasTexture(canvas);
+    }
+
+    // Số Dock đỗ xe
+    function createDockNumberTexture(num) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256; canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#0284c7'; ctx.fillRect(0, 0, 256, 256);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 140px Arial';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(num.toString(), 128, 128);
+      return new THREE.CanvasTexture(canvas);
+    }
+
+    const corrugatedTex = createCorrugatedTexture();
+
+    // 4. MÔ HÌNH MẶT ĐẤT VÀ ĐƯỜNG NẠP HÀNG
+    const groundGroup = new THREE.Group();
+    
+    // Đường nhựa chính
+    const roadGeo = new THREE.PlaneGeometry(140, 140);
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.9 });
+    const road = new THREE.Mesh(roadGeo, roadMat);
+    road.rotation.x = -Math.PI / 2;
+    road.receiveShadow = true;
+    groundGroup.add(road);
+
+    // Vạch kẻ đỗ xe & Làn đường sơn vàng
+    const grid = new THREE.GridHelper(140, 70, 0x3b82f6, 0x334155);
+    grid.position.y = 0.02;
+    groundGroup.add(grid);
+
+    // Thảm cỏ xanh ven đường
+    const grassGeo = new THREE.PlaneGeometry(140, 30);
+    const grassMat = new THREE.MeshStandardMaterial({ color: 0x064e3b, roughness: 1.0 });
+    const grass = new THREE.Mesh(grassGeo, grassMat);
+    grass.rotation.x = -Math.PI / 2;
+    grass.position.set(0, 0.01, 55);
+    grass.receiveShadow = true;
+    groundGroup.add(grass);
+
+    scene.add(groundGroup);
+
+    // 5. MÔ HÌNH TÒA NHÀ KHO CHI TIẾT (WAREHOUSE)
+    const warehouse = new THREE.Group();
+    
+    // Thân nhà kho chính
+    const mainBuildingGeo = new THREE.BoxGeometry(76, 14, 28);
+    const mainBuildingMat = new THREE.MeshStandardMaterial({ color: 0x1e3a8a, metalness: 0.2, roughness: 0.4 });
+    const mainBuilding = new THREE.Mesh(mainBuildingGeo, mainBuildingMat);
+    mainBuilding.position.set(0, 7, -22);
+    mainBuilding.castShadow = true;
+    mainBuilding.receiveShadow = true;
+    warehouse.add(mainBuilding);
+
+    // Mái vòm kho màu ghi xám
+    const roofGeo = new THREE.BoxGeometry(78, 1.2, 30);
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0x475569 });
+    const roof = new THREE.Mesh(roofGeo, roofMat);
+    roof.position.set(0, 14.6, -22);
+    roof.castShadow = true;
+    warehouse.add(roof);
+
+    // Các quạt thông gió trên mái
+    for(let i = -25; i <= 25; i += 25) {
+      const ventGeo = new THREE.CylinderGeometry(1.2, 1.5, 1, 16);
+      const ventMat = new THREE.MeshStandardMaterial({ color: 0x334155 });
+      const vent = new THREE.Mesh(ventGeo, ventMat);
+      vent.position.set(i, 15.5, -22);
+      warehouse.add(vent);
+    }
+
+    // Các Dock nhận hàng (Khung viền + Cửa cuốn + Đèn Dock)
+    const dockPositionsX = [-22, 0, 22];
+    dockPositionsX.forEach((x, index) => {
+      // Viền đệm cao su đen quanh cửa
+      const frameGeo = new THREE.BoxGeometry(9.6, 9.6, 0.6);
+      const frameMat = new THREE.MeshStandardMaterial({ color: 0x020617 });
+      const frame = new THREE.Mesh(frameGeo, frameMat);
+      frame.position.set(x, 4.8, -7.7);
+      warehouse.add(frame);
+
+      // Cửa cuốn kim loại
+      const doorGeo = new THREE.BoxGeometry(8.4, 8.8, 0.2);
+      const doorMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.5, roughness: 0.5 });
+      const door = new THREE.Mesh(doorGeo, doorMat);
+      door.position.set(x, 4.4, -7.5);
+      warehouse.add(door);
+
+      // Biển số hiệu Dock
+      const dockNumGeo = new THREE.PlaneGeometry(2, 2);
+      const dockNumMat = new THREE.MeshBasicMaterial({ map: createDockNumberTexture(index + 1) });
+      const dockNum = new THREE.Mesh(dockNumGeo, dockNumMat);
+      dockNum.position.set(x, 10.8, -7.35);
+      warehouse.add(dockNum);
+
+      // Đèn Spotlight chiếu sáng cửa Dock
+      const dockLight = new THREE.SpotLight(0xffedd5, 3, 18, Math.PI / 4, 0.5);
+      dockLight.position.set(x, 10, -6.5);
+      dockLight.target.position.set(x, 0, -4);
+      scene.add(dockLight);
+      scene.add(dockLight.target);
+    });
+
+    scene.add(warehouse);
+
+    // CÂY XANH LOW-POLY TRANG TRÍ MÔI TRƯỜNG
+    function createTree(x, z) {
+      const tree = new THREE.Group();
+      const trunkGeo = new THREE.CylinderGeometry(0.3, 0.5, 3, 8);
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x78350f });
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.y = 1.5;
+      trunk.castShadow = true;
+      tree.add(trunk);
+
+      const leavesGeo = new THREE.ConeGeometry(2.2, 5, 8);
+      const leavesMat = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.8 });
+      const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+      leaves.position.y = 4.5;
+      leaves.castShadow = true;
+      tree.add(leaves);
+
+      tree.position.set(x, 0, z);
+      scene.add(tree);
+    }
+    [-55, -45, 45, 55].forEach(x => createTree(x, 50));
+
+    // 6. MÔ HÌNH XE CONTAINER CHI TIẾT
+    class ContainerTruck {
+      constructor(id, plateNumber, dockX) {
+        this.id = id;
+        this.plateNumber = plateNumber;
+        this.dockX = dockX;
+        this.status = 'LOADING';
+        this.loadedPallets = [];
+
+        this.mesh = new THREE.Group();
+        this.wheels = [];
+        this.buildTruck();
+        
+        this.mesh.position.set(dockX, 0, 45);
+        scene.add(this.mesh);
+
+        this.createFloatingLabel();
+        this.createLightBlink();
+      }
+
+      buildTruck() {
+        // Cabin
+        const cabinGeo = new THREE.BoxGeometry(3.4, 3.4, 3.8);
+        const cabinMat = new THREE.MeshStandardMaterial({ color: 0x2563eb, metalness: 0.3, roughness: 0.3 });
+        const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+        cabin.position.set(0, 2.1, 4.8);
+        cabin.castShadow = true;
+        this.mesh.add(cabin);
+
+        // Kính chắn gió
+        const glassGeo = new THREE.BoxGeometry(3.2, 1.4, 0.1);
+        const glassMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.1 });
+        const glass = new THREE.Mesh(glassGeo, glassMat);
+        glass.position.set(0, 2.7, 6.71);
+        this.mesh.add(glass);
+
+        // Đèn pha trước chiếu sáng mặt đường
+        const headlightL = new THREE.SpotLight(0xffffff, 4, 20, Math.PI / 6);
+        headlightL.position.set(-1.2, 1.2, 6.6);
+        headlightL.target.position.set(-1.2, 0, 20);
+        this.mesh.add(headlightL);
+        this.mesh.add(headlightL.target);
+
+        // Thùng Container với Texture Gợn Sóng
+        const containerGeo = new THREE.BoxGeometry(3.6, 3.8, 9.6);
+        const containerMat = new THREE.MeshStandardMaterial({ 
+          color: 0xf1f5f9, 
+          bumpMap: corrugatedTex, 
+          bumpScale: 0.08,
+          roughness: 0.5 
+        });
+        const container = new THREE.Mesh(containerGeo, containerMat);
+        container.position.set(0, 2.6, -2);
+        container.castShadow = true;
+        this.mesh.add(container);
+
+        // Bánh xe tải (có hiệu ứng xoay)
+        const wheelGeo = new THREE.CylinderGeometry(0.75, 0.75, 0.6, 24);
+        const wheelMat = new THREE.MeshStandardMaterial({ color: 0x020617, roughness: 0.9 });
+        const rimMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8 });
+
+        const wheelPositions = [
+          [-1.7, 0.75, 5.2], [1.7, 0.75, 5.2],
+          [-1.7, 0.75, -1], [1.7, 0.75, -1],
+          [-1.7, 0.75, -4.5], [1.7, 0.75, -4.5]
+        ];
+
+        wheelPositions.forEach(pos => {
+          const wheelGroup = new THREE.Group();
+          const tire = new THREE.Mesh(wheelGeo, wheelMat);
+          tire.rotation.z = Math.PI / 2;
+          tire.castShadow = true;
+          wheelGroup.add(tire);
+
+          const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.62, 12), rimMat);
+          rim.rotation.z = Math.PI / 2;
+          wheelGroup.add(rim);
+
+          wheelGroup.position.set(...pos);
+          this.mesh.add(wheelGroup);
+          this.wheels.push(wheelGroup);
+        });
+
+        // Gắn Biển Số Xe 2 bên thùng
+        const plateTex = createPlateTexture(this.plateNumber);
+        const plateGeo = new THREE.PlaneGeometry(3.2, 0.8);
+        const plateMat = new THREE.MeshBasicMaterial({ map: plateTex, side: THREE.DoubleSide });
+
+        const plateL = new THREE.Mesh(plateGeo, plateMat);
+        plateL.position.set(-1.81, 3.0, -2);
+        plateL.rotation.y = -Math.PI / 2;
+        this.mesh.add(plateL);
+
+        const plateR = new THREE.Mesh(plateGeo, plateMat);
+        plateR.position.set(1.81, 3.0, -2);
+        plateR.rotation.y = Math.PI / 2;
+        this.mesh.add(plateR);
+
+        // 🚨 ĐÈN BÁO STATUS TRÊN ĐỈNH XE (RED/GREEN)
+        const beaconGeo = new THREE.CylinderGeometry(0.3, 0.4, 0.6, 16);
+        this.beaconMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
+        this.beacon = new THREE.Mesh(beaconGeo, this.beaconMat);
+        this.beacon.position.set(0, 4.8, 4.8);
+        this.mesh.add(this.beacon);
+
+        this.pointLight = new THREE.PointLight(0xef4444, 4, 12);
+        this.pointLight.position.set(0, 5, 4.8);
+        this.mesh.add(this.pointLight);
+      }
+
+      // Nhãn 3D HTML nổi trôi theo xe
+      createFloatingLabel() {
+        this.uiLabel = document.createElement('div');
+        this.uiLabel.className = 'truck-label-3d';
+        this.uiLabel.innerHTML = `🚛 ${this.plateNumber}`;
+        document.getElementById('labels-container').appendChild(this.uiLabel);
+      }
+
+      createLightBlink() {
+        setInterval(() => {
+          const currentColor = this.status === 'LOADING' ? 0xef4444 : 0x10b981;
+          if (this.beaconMat.color.getHex() === 0x000000) {
+            this.beaconMat.color.setHex(currentColor);
+            this.pointLight.color.setHex(currentColor);
+            this.pointLight.intensity = 4;
+          } else {
+            this.beaconMat.color.setHex(0x000000);
+            this.pointLight.intensity = 0;
+          }
+        }, 350);
+      }
+
+      setStatus(status) {
+        this.status = status;
+      }
+    }
+
+    // 7. MÔ HÌNH XE NÂNG (FORKLIFT)
+    class Forklift {
+      constructor(dockX, truck) {
+        this.dockX = dockX;
+        this.truck = truck;
+        this.mesh = new THREE.Group();
+        this.buildForklift();
+        this.mesh.position.set(dockX, 0, -13);
+        scene.add(this.mesh);
+
+        this.startLoadingSequence();
+      }
+
+      buildForklift() {
+        const bodyGeo = new THREE.BoxGeometry(1.8, 1.4, 2.4);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.3 }); // Cam đậm
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.y = 0.9;
+        body.castShadow = true;
+        this.mesh.add(body);
+
+        // Khung bảo vệ tài xế
+        const cageGeo = new THREE.BoxGeometry(1.6, 1.8, 1.6);
+        const cageMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, wireframe: true });
+        const cage = new THREE.Mesh(cageGeo, cageMat);
+        cage.position.set(0, 2.3, -0.2);
+        this.mesh.add(cage);
+
+        // Cột & Càng nâng
+        const mastGeo = new THREE.BoxGeometry(1.2, 2.8, 0.2);
+        const mastMat = new THREE.MeshStandardMaterial({ color: 0x334155 });
+        const mast = new THREE.Mesh(mastGeo, mastMat);
+        mast.position.set(0, 1.6, 1.2);
+        this.mesh.add(mast);
+
+        const forkGeo = new THREE.BoxGeometry(1.2, 0.1, 1.4);
+        const forkMat = new THREE.MeshStandardMaterial({ color: 0x020617 });
+        this.fork = new THREE.Mesh(forkGeo, forkMat);
+        this.fork.position.set(0, 0.2, 1.8);
+        this.mesh.add(this.fork);
+      }
+
+      startLoadingSequence() {
+        let itemsCount = 0;
+        const maxItems = 3;
+
+        const cycle = () => {
+          if (itemsCount >= maxItems) {
+            this.truck.setStatus('READY');
+            updateDashboardUI();
+
+            // Xe tải xuất bến
+            new TWEEN.Tween(this.truck.mesh.position)
+              .to({ z: 65 }, 3500)
+              .delay(800)
+              .easing(TWEEN.Easing.Quadratic.In)
+              .onUpdate(() => {
+                this.truck.wheels.forEach(w => w.children[0].rotation.x += 0.2);
+              })
+              .onComplete(() => {
+                // Xe tiếp theo vào dock
+                this.truck.mesh.position.z = -55;
+                this.truck.setStatus('LOADING');
+                this.truck.loadedPallets.forEach(p => scene.remove(p));
+                this.truck.loadedPallets = [];
+                updateDashboardUI();
+
+                new TWEEN.Tween(this.truck.mesh.position)
+                  .to({ z: -1.5 }, 3000)
+                  .easing(TWEEN.Easing.Cubic.Out)
+                  .onUpdate(() => {
+                    this.truck.wheels.forEach(w => w.children[0].rotation.x += 0.2);
+                  })
+                  .onComplete(() => {
+                    itemsCount = 0;
+                    cycle();
+                  })
+                  .start();
+              })
+              .start();
+            return;
+          }
+
+          // Tạo Pallet hàng
+          const pallet = createPalletMesh();
+          pallet.position.set(0, 0.15, 0.6);
+          this.fork.add(pallet);
+
+          // Xe nâng di chuyển ra đuôi xe tải
+          new TWEEN.Tween(this.mesh.position)
+            .to({ z: -7.8 }, 1800)
+            .easing(TWEEN.Easing.Quadratic.InOut)
+            .onComplete(() => {
+              // Thả pallet vào thùng xe
+              this.fork.remove(pallet);
+              this.truck.mesh.add(pallet);
+              pallet.position.set(0, 0.6, -6.0 + itemsCount * 2.0);
+              this.truck.loadedPallets.push(pallet);
+
+              itemsCount++;
+
+              // Lùi về lấy hàng tiếp
+              new TWEEN.Tween(this.mesh.position)
+                .to({ z: -13 }, 1800)
+                .delay(400)
+                .easing(TWEEN.Easing.Quadratic.InOut)
+                .onComplete(() => cycle())
+                .start();
+            })
+            .start();
+        };
+
+        cycle();
+      }
+    }
+
+    function createPalletMesh() {
+      const group = new THREE.Group();
+      const baseGeo = new THREE.BoxGeometry(1.8, 0.2, 1.8);
+      const baseMat = new THREE.MeshStandardMaterial({ color: 0x92400e });
+      const base = new THREE.Mesh(baseGeo, baseMat);
+      base.castShadow = true;
+      group.add(base);
+
+      const boxGeo = new THREE.BoxGeometry(1.6, 1.4, 1.6);
+      const boxMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.6 });
+      const box = new THREE.Mesh(boxGeo, boxMat);
+      box.position.y = 0.8;
+      box.castShadow = true;
+      group.add(box);
+
+      return group;
+    }
+
+    // 8. KHỞI TẠO DANH SÁCH XE & LÊN LỊCH CHẠY
+    const trucks = [
+      new ContainerTruck(1, '29C-884.21', dockPositionsX[0]),
+      new ContainerTruck(2, '51D-102.95', dockPositionsX[1]),
+      new ContainerTruck(3, '15R-639.40', dockPositionsX[2])
+    ];
+
+    trucks.forEach((truck, i) => {
+      new TWEEN.Tween(truck.mesh.position)
+        .to({ z: -1.5 }, 2200 + i * 400)
+        .easing(TWEEN.Easing.Cubic.Out)
+        .onUpdate(() => {
+          truck.wheels.forEach(w => w.children[0].rotation.x += 0.2);
+        })
+        .onComplete(() => {
+          new Forklift(truck.dockX, truck);
+        })
+        .start();
+    });
+
+    // Cập nhật UI Panel
+    function updateDashboardUI() {
+      const listContainer = document.getElementById('truck-status-list');
+      listContainer.innerHTML = '';
+
+      trucks.forEach(truck => {
+        const item = document.createElement('div');
+        item.className = 'status-card';
+        const isReady = truck.status === 'READY';
+
+        item.innerHTML = `
+          <div>
+            <div style="font-weight: 700; font-size: 14px;">Xe: ${truck.plateNumber}</div>
+            <div style="color: #64748b; font-size: 11px; margin-top: 2px;">Vị trí: Dock 0${truck.dockX > 0 ? '3' : truck.dockX === 0 ? '2' : '1'}</div>
+          </div>
+          <span class="status-badge ${isReady ? 'badge-ready' : 'badge-loading'}">
+            ${isReady ? 'HOÀN TẤT' : 'ĐANG BỐC HÀNG'}
+          </span>
+        `;
+        listContainer.appendChild(item);
+      });
+    }
+    updateDashboardUI();
+
+    // Cập nhật vị trí nhãn 3D trôi theo xe
+    function update3DLabels() {
+      trucks.forEach(truck => {
+        const vector = new THREE.Vector3();
+        truck.mesh.getWorldPosition(vector);
+        vector.y += 6.5;
+
+        vector.project(camera);
+
+        const x = (vector.x * 0.5 + 0.5) * window.innerWidth;
+        const y = (-(vector.y * 0.5) + 0.5) * window.innerHeight;
+
+        if (truck.uiLabel) {
+          truck.uiLabel.style.transform = `translate(-50%, -100%) translate(${x}px, ${y}px)`;
+        }
+      });
+    }
+
+    // 9. RENDER LOOP
+    function animate(time) {
+      requestAnimationFrame(animate);
+      TWEEN.update(time);
+      controls.update();
+      update3DLabels();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // Responsive Window Resize
+    window.addEventListener('resize', () => {
+      const aspect = window.innerWidth / window.innerHeight;
+      camera.left = -d * aspect;
+      camera.right = d * aspect;
+      camera.top = d;
+      camera.bottom = -d;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
